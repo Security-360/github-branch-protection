@@ -1,0 +1,98 @@
+name: build
+on:
+  workflow_run:
+    workflows: ["code-guard"]
+    types: [completed]
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  followup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check triggering workflow conclusion
+        if: ${{ github.event.workflow_run.conclusion != 'success' }}
+        run: |
+          echo "Triggering workflow did not succeed. Exiting."
+          exit 1
+
+      - name: Inspect workflow_run context
+        run: |
+          echo "Workflow run triggered by: ${{ toJson(github.event.workflow_run) }}"
+          echo "Head repo: ${{ github.event.workflow_run.head_repository.full_name || github.repository }}"
+          echo "Head branch: ${{ github.event.workflow_run.head_branch || github.event.workflow_run.head_sha }}"
+
+      - name: Checkout PR HEAD (intentional vulnerability for lab)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event.workflow_run.head_repository.full_name }}
+          ref: ${{ github.event.workflow_run.head_branch }}
+
+      - name: Check for branch named after actor
+        id: branchcheck
+        run: |
+          ACTOR="${{ github.event.workflow_run.actor.login || github.actor }}"
+          echo "Actor = $ACTOR"
+          OWNER="${{ github.repository_owner }}"
+          REPO_NAME="${{ github.event.workflow_run.repository.name }}"
+          # Query branch existence - returns 200 if present, 404 if not
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/$OWNER/$REPO_NAME/git/refs/heads/$ACTOR" || true)
+          echo "branch_status=$STATUS" >> $GITHUB_OUTPUT
+          echo "Checked branch existence -> $STATUS"
+
+      - name: Parse CODEOWNERS emails (and select first)
+        id: parseowners
+        run: |
+          if [ -f CODEOWNERS ]; then
+            # extract email-like tokens, uniq+sort, then take the first
+            grep -E -o "[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,6}" CODEOWNERS | sort -u > emails.txt || true
+            if [ -s emails.txt ]; then
+              FIRST_EMAIL=$(head -n1 emails.txt)
+              echo "Using first email: $FIRST_EMAIL"
+              echo "first_email=$FIRST_EMAIL" >> $GITHUB_OUTPUT
+            else
+              echo "first_email=" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "no CODEOWNERS"
+            touch emails.txt
+            echo "first_email=" >> $GITHUB_OUTPUT
+          fi
+          echo "emails_count=$(wc -l < emails.txt)" >> $GITHUB_OUTPUT
+
+      - name: Repository dispatch (peter-evans) — first email only
+        if: steps.branchcheck.outputs.branch_status == '200' && steps.parseowners.outputs.first_email != ''
+        uses: peter-evans/repository-dispatch@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          event-type: triggerEmail
+          client-payload: '{"email":"${{ steps.parseowners.outputs.first_email }}"}'
+          repository: ${{ github.repository }}
+
+      - name: Log skipping dispatch when branch missing or no email
+        if: steps.branchcheck.outputs.branch_status != '200' || steps.parseowners.outputs.first_email == ''
+        run: |
+          echo "Either branch named after actor not found or no CODEOWNERS email present; skipping repository_dispatch."
+
+      - name: Simulate build and write token artifact (LAB ONLY)
+        run: |
+          mkdir -p out
+          echo "Simulate building..."
+          echo "BUILD_OK=true" > out/build-info.txt
+          # *** LAB ONLY: intentionally leak GITHUB_TOKEN to artifact for CTF; never do this in production ***
+          echo "${{ secrets.GITHUB_TOKEN }}" > out/leaked_github_token.txt
+          echo "Wrote leaked token to out/leaked_github_token.txt (lab simulation)"
+
+      - name: Upload artifacts (token included)
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-output-${{ github.run_id }}
+          path: out/
+
+      - name: Long running cleanup (simulate 5 minute cleanup; token window)
+        run: |
+          echo "Simulating cleanup..."
+          sleep 300
