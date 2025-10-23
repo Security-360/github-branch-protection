@@ -1,4 +1,4 @@
-name: code-lint
+name: code-guard
 on:
   pull_request:
     types: [opened, synchronize, reopened]
