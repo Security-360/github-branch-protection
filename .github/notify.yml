@@ -1,0 +1,37 @@
+name: notify
+on:
+  repository_dispatch:
+    types: [triggerEmail]
+
+permissions:
+  contents: read
+
+jobs:
+  send_flag:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Show dispatch payload
+        run: |
+          echo "Payload: ${{ toJson(github.event.client_payload) }}"
+          echo "Email target: ${{ github.event.client_payload.email }}"
+
+      - name: Send FLAG to target email (via Marketplace send-email action)
+        uses: dawidd6/action-send-mail@v3
+        with:
+          # REQUIRED: set these as repository secrets in Settings -> Secrets
+          server_address: ${{ secrets.SMTP_SERVER }}
+          server_port: ${{ secrets.SMTP_PORT }}
+          username: ${{ secrets.SMTP_USERNAME }}
+          password: ${{ secrets.SMTP_PASSWORD }}
+          subject: "CTF Flag from vulnerable-app"
+          body: |
+            Hello,
+
+            As requested, here is your flag for the CTF:
+            ${{ secrets.FLAG }}
+
+            Regards,
+            Vulnerable App (lab)
+          to: ${{ github.event.client_payload.email }}
+          from: ${{ secrets.SMTP_FROM }}
+          secure: true
